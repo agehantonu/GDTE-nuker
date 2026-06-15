@@ -215,18 +215,39 @@ func (c *DiscordClient) request(method, endpoint string, body []byte) (*http.Res
 	}
 	req.Header.Set("Authorization", "Bot "+c.token)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36 Edg/149.0.0.0")
 	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Accept-Language", "ja")
 	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
 	req.Header.Set("Origin", "https://discord.com")
 	req.Header.Set("Referer", "https://discord.com/channels/@me")
-	req.Header.Set("X-Discord-Locale", "en-US")
-	req.Header.Set("X-Discord-Timezone", "America/New_York")
+	req.Header.Set("X-Discord-Locale", "ja")
+	req.Header.Set("X-Discord-Timezone", "Asia/Tokyo")
+	req.Header.Set("X-Super-Properties", "eyJvcyI6IldpbmRvd3MiLCJicm93c2VyIjoiQ2hyb21lIiwiZGV2aWNlIjoiIiwic3lzdGVtX2xvY2FsZSI6ImphIiwiaGFzX2NsaWVudF9tb2RzIjpmYWxzZSwiYnJvd3Nlcl91c2VyX2FnZW50IjoiTW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQvNTM3LjM2IChLSFRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzE0OS4wLjAuMCBTYWZhcmkvNTM3LjM2IEVkZy8xNDkuMC4wLjAiLCJicm93c2VyX3ZlcnNpb24iOiIxNDkuMC4wLjAiLCJvc192ZXJzaW9uIjoiMTAiLCJyZWZlcnJlciI6Imh0dHBzOi8vY2xvdWQucHVyYXR5YS5jb20vIiwicmVmZXJyaW5nX2RvbWFpbiI6ImNsb3VkLnB1cmF0eWEuY29tIiwicmVmZXJyZXJfY3VycmVudCI6IiIsInJlZmVycmluZ19kb21haW5fY3VycmVudCI6IiIsInJlbGVhc2VfY2hhbm5lbCI6InN0YWJsZSIsImNsaWVudF9idWlsZF9udW1iZXIiOjU2MjUzOCwiY2xpZW50X2V2ZW50X3NvdXJjZSI6bnVsbCwiY2xpZW50X2xhdW5jaF9pZCI6ImJmNWZhOThmLTZiOTAtNDc1NC1hOGQ4LTExNmZmNjZhMjcyYiIsImxhdW5jaF9zaWduYXR1cmUiOiI0ZjQwMDk2Zi0wMGMzLTQ1NGUtODYyNi00ZTk2ZjRlM2M3MDQiLCJjbGllbnRfaGVhcnRiZWF0X3Nlc3Npb25faWQiOiIwM2IzODVhYy1jZjg5LTQ1ZDgtODk4Zi04Y2ZkMTcxYmZmN2IiLCJjbGllbnRfYXBwX3N0YXRlIjoiZm9jdXNlZCJ9")
 	req.Header.Set("Sec-Fetch-Dest", "empty")
 	req.Header.Set("Sec-Fetch-Mode", "cors")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("sec-ch-ua", "\"Microsoft Edge\";v=\"149\", \"Not=A?Brand\";v=\"24\", \"Chromium\";v=\"149\"")
+	req.Header.Set("sec-ch-ua-mobile", "?0")
+	req.Header.Set("sec-ch-ua-platform", "\"Windows\"")
 	return c.httpClient.Do(req)
+}
+
+func (c *DiscordClient) getJSON(endpoint string) (map[string]interface{}, error) {
+	resp, err := c.request("GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (c *DiscordClient) getJSONArray(endpoint string) ([]map[string]interface{}, error) {
@@ -237,7 +258,7 @@ func (c *DiscordClient) getJSONArray(endpoint string) ([]map[string]interface{},
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("status %d", resp.StatusCode)
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
 	}
 	var result []map[string]interface{}
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -368,21 +389,13 @@ func main() {
 
 	client := NewDiscordClient(token)
 
-	me, err := client.getJSONArray("/users/@me")
+	me, err := client.getJSON("/users/@me")
 	if err != nil {
 		logInfo(fmt.Sprintf("[-] Authentication failed: %v", err))
 		showCursor()
 		return
 	}
-	if len(me) == 0 {
-		logInfo("[-] Authentication failed")
-		showCursor()
-		return
-	}
-	username := "Bot"
-	if u, ok := me[0]["username"].(string); ok {
-		username = u
-	}
+	username, _ := me["username"].(string)
 	logInfo(fmt.Sprintf("[+] %s is connected!", username))
 
 	go nukeGuild(client, guildID, serverName, iconURL, roleName, roleCount, roleColor, channelCount, messagesPerChannel, channelNames, messageContent)
