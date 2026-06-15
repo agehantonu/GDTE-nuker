@@ -215,25 +215,18 @@ func (c *DiscordClient) request(method, endpoint string, body []byte) (*http.Res
 	}
 	req.Header.Set("Authorization", "Bot "+c.token)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
+	req.Header.Set("Origin", "https://discord.com")
+	req.Header.Set("Referer", "https://discord.com/channels/@me")
+	req.Header.Set("X-Discord-Locale", "en-US")
+	req.Header.Set("X-Discord-Timezone", "America/New_York")
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	return c.httpClient.Do(req)
-}
-
-func (c *DiscordClient) getJSON(endpoint string) (map[string]interface{}, error) {
-	resp, err := c.request("GET", endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
-	}
-	var result map[string]interface{}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, err
-	}
-	return result, nil
 }
 
 func (c *DiscordClient) getJSONArray(endpoint string) ([]map[string]interface{}, error) {
@@ -244,7 +237,7 @@ func (c *DiscordClient) getJSONArray(endpoint string) ([]map[string]interface{},
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
 	var result []map[string]interface{}
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -375,13 +368,21 @@ func main() {
 
 	client := NewDiscordClient(token)
 
-	me, err := client.getJSON("/users/@me")
+	me, err := client.getJSONArray("/users/@me")
 	if err != nil {
 		logInfo(fmt.Sprintf("[-] Authentication failed: %v", err))
 		showCursor()
 		return
 	}
-	username, _ := me["username"].(string)
+	if len(me) == 0 {
+		logInfo("[-] Authentication failed")
+		showCursor()
+		return
+	}
+	username := "Bot"
+	if u, ok := me[0]["username"].(string); ok {
+		username = u
+	}
 	logInfo(fmt.Sprintf("[+] %s is connected!", username))
 
 	go nukeGuild(client, guildID, serverName, iconURL, roleName, roleCount, roleColor, channelCount, messagesPerChannel, channelNames, messageContent)
@@ -471,7 +472,7 @@ func nukeGuild(client *DiscordClient, guildID, serverName, iconURL, roleName str
 
 	createdChannelIDs := make([]string, 0, channelCount)
 	if channelCount > 0 {
-		logInfo(fmt.Sprintf("[i] Creating %d channels via API v9...", channelCount))
+		logInfo(fmt.Sprintf("[i] Creating %d channels at MAXIMUM SPEED...", channelCount))
 		preGeneratedNames := make([]string, channelCount)
 		for i := 0; i < channelCount; i++ {
 			preGeneratedNames[i] = generateChannelName(channelNames)
@@ -507,7 +508,7 @@ func nukeGuild(client *DiscordClient, guildID, serverName, iconURL, roleName str
 
 	if messagesPerChannel > 0 && len(createdChannelIDs) > 0 {
 		totalMsgs := len(createdChannelIDs) * messagesPerChannel
-		logInfo(fmt.Sprintf("[i] Sending %d messages...", totalMsgs))
+		logInfo(fmt.Sprintf("[i] Sending %d messages at MAXIMUM SPEED...", totalMsgs))
 		var msgWg sync.WaitGroup
 		msgSuccess := 0
 		msgErr := 0
@@ -607,7 +608,7 @@ func nukeGuild(client *DiscordClient, guildID, serverName, iconURL, roleName str
 	}
 
 	if roleCount > 0 {
-		logInfo(fmt.Sprintf("[i] Creating %d roles...", roleCount))
+		logInfo(fmt.Sprintf("[i] Creating %d roles at MAXIMUM SPEED...", roleCount))
 		var roleCreateWg sync.WaitGroup
 		for i := 0; i < roleCount; i++ {
 			roleCreateWg.Add(1)
